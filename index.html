@@ -1,0 +1,502 @@
+<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>頗瓦法超薦祈請卡</title><style>
+*{box-sizing:border-box}body{margin:0;background:#0d1520;color:#eee5d0;font:16px/1.6 system-ui,sans-serif}header,main{max-width:1120px;margin:auto;padding:24px}h1{font:600 26px serif;color:#e6c57c;margin:0}p{color:#b8c1cc}main{display:grid;grid-template-columns:1fr 1fr;gap:28px;padding-top:0}.panel{background:#182333;border:1px solid #6e5a35;border-radius:16px;padding:24px}label{display:block;margin:14px 0 6px}input,select,textarea,button{font:inherit;border-radius:8px;padding:10px;width:100%;background:#101a28;color:#f5e9ca;border:1px solid #526071}input[type=checkbox]{width:auto}input[type=range]{padding:0}button{cursor:pointer;background:#ddbd76;color:#182333;font-weight:650;margin-top:14px}button:disabled{opacity:.45;cursor:default}.row{display:flex;gap:10px}.row>*{flex:1;min-width:0}.hint{font-size:13px;color:#aab6c5}#status{color:#f4d18c;min-height:48px}canvas{width:100%;height:auto;display:block;border-radius:12px}details{margin-top:18px}summary{cursor:pointer;color:#e6c57c}textarea{min-height:120px}#converted{color:#d9c48d;font-size:14px;margin-top:10px}[hidden]{display:none!important}@media(max-width:760px){main{grid-template-columns:1fr}header,main{padding:16px}.panel{padding:18px}}a{color:#e6c57c}</style>
+<header><h1>頗瓦法超薦祈請卡</h1><p>填寫資料，立即產生祈請卡。照片與資料僅在此瀏覽器處理。</p></header><main><section class="panel"><form id="form" novalidate>
+<label for="name">1. 姓名</label><input id="name" required maxlength="30" placeholder="請輸入亡者姓名" autocomplete="off">
+<label for="calendar">2. 出生日期</label><div class="row"><select id="calendar" aria-label="出生曆法"><option value="solar">國曆</option><option value="lunar">農曆</option></select><select id="era" aria-label="紀年"><option value="ad">西元年</option><option value="roc">民國年</option></select></div>
+<div class="row"><input id="year" type="number" placeholder="年" aria-label="出生年" min="1" max="2100" required><select id="month" aria-label="出生月"></select><select id="day" aria-label="出生日"></select></div><label id="leapWrap" hidden><input id="leap" type="checkbox"> 閏月</label><div class="hint">支援西元 1901–2099 年；農曆年以正月初一為界。切換曆法會保留同一天。</div><div id="converted" aria-live="polite"></div>
+<label for="death">3. 死亡日期（國曆）</label><input id="death" type="date" required>
+<label for="photo">4. 照片</label><input id="photo" type="file" accept="image/jpeg,image/png,image/webp"><div class="hint">支援 JPG、PNG、WebP，最大 20 MB。照片自動等比例裁切。</div>
+<details><summary>調整照片位置</summary><label for="photoZoom">放大</label><input id="photoZoom" type="range" min="100" max="240" value="100"><label for="photoPanX">左右</label><input id="photoPanX" type="range" min="-100" max="100" value="0"><label for="photoPanY">上下</label><input id="photoPanY" type="range" min="-100" max="100" value="0"></details>
+<details><summary>進階：英文姓名與祈請文</summary><label for="english">英文姓名（選填）</label><input id="english" placeholder="可填護照拼法"><div id="nameHint" class="hint"></div><label for="enText">英文祈請文</label><textarea id="enText"></textarea><label for="zhText">中文祈請文</label><textarea id="zhText"></textarea><button id="resetText" type="button">恢復自動產生內文</button></details>
+<div id="status" role="status" aria-live="polite"></div><button id="download" type="button" disabled>下載 PNG 祈請卡</button><button id="copy" type="button">複製中英文祈請文</button></form></section><section><canvas id="masterCanvas" width="1200" height="1680" aria-label="祈請卡即時預覽"></canvas><p class="hint">1200 × 1680 像素 · 5:7 比例<br>確認日期與姓名後再下載。重新整理將清除填寫資料。</p></section></main><script>
+'use strict';
+const $=id=>document.getElementById(id);let uploadedPhotoImg=null,photoLoading=false,photoError='',photoVersion=0,dirtyEn=false,dirtyZh=false,frame=0,birth=null,layoutOK=true;
+const fmt=new Intl.DateTimeFormat('en-u-ca-chinese',{year:'numeric',month:'numeric',day:'numeric',timeZone:'UTC'});
+const cache=new Map();
+function lunarParts(date){const p=Object.fromEntries(fmt.formatToParts(date).map(x=>[x.type,x.value]));if(!p.relatedYear)throw Error('此瀏覽器不支援農曆，請使用新版 Chrome、Edge 或 Safari。');return {y:+p.relatedYear,m:parseInt(p.month,10),d:+p.day,leap:p.month.includes('bis')};}
+function yearDays(y){if(!cache.has(y)){const out=[];for(let t=Date.UTC(y,0,1);t<Date.UTC(y+1,2,1);t+=86400000){const date=new Date(t),l=lunarParts(date);if(l.y===y)out.push({date,l});}cache.set(y,out);}return cache.get(y);}
+function inputYear(){return +$('year').value+($('era').value==='roc'?1911:0);}
+function readBirth(){const y=inputYear(),m=+$('month').value,d=+$('day').value;if(!$('year').value||y<1901||y>2099)throw Error('請填寫 1901–2099 年的出生日期。');if($('calendar').value==='lunar'){const found=yearDays(y).find(x=>x.l.m===m&&x.l.d===d&&x.l.leap===$('leap').checked);if(!found)throw Error('此農曆日期不存在，請確認月份、日期與閏月。');return found.date;}const date=new Date(Date.UTC(y,m-1,d));if(date.getUTCFullYear()!==y||date.getUTCMonth()!==m-1||date.getUTCDate()!==d)throw Error('出生日期不存在。');return date;}
+function updateDays(){const old=+$('day').value||1,y=inputYear(),m=+$('month').value;let n=31;if($('calendar').value==='solar')n=new Date(Date.UTC(y||2000,m,0)).getUTCDate();else if(y>=1901&&y<=2099){const ds=yearDays(y).filter(x=>x.l.m===m&&x.l.leap===$('leap').checked);n=ds.length?ds.at(-1).l.d:30;}else n=30;$('day').replaceChildren(...Array.from({length:n},(_,i)=>new Option((i+1)+' 日',i+1)));$('day').value=Math.min(old,n);}
+function applyBirth(date){if(!date)return;const l=lunarParts(date),isL=$('calendar').value==='lunar',y=isL?l.y:date.getUTCFullYear();$('year').value=y-($('era').value==='roc'?1911:0);$('month').value=isL?l.m:date.getUTCMonth()+1;$('leap').checked=isL&&l.leap;updateDays();$('day').value=isL?l.d:date.getUTCDate();}
+const animals=['鼠','牛','虎','兔','龍','蛇','馬','羊','猴','雞','狗','豬'];const stems='甲乙丙丁戊己庚辛壬癸',branches='子丑寅卯辰巳午未申酉戌亥';
+function solarText(d){return `${d.getUTCFullYear()}年${d.getUTCMonth()+1}月${d.getUTCDate()}日`;}
+function lunarText(d){const l=lunarParts(d);return `農曆${stems[(l.y-4)%10]}${branches[(l.y-4)%12]}年${l.leap?'閏':''}${l.m}月${l.d}日（屬${animals[(l.y-4)%12]}）`;}
+    const SURNAME_WADE_GILES = {
+      '陳':'CHEN','林':'LIN','黃':'HUANG','張':'CHANG','李':'LI','王':'WANG','吳':'WU','劉':'LIU','蔡':'TSAI','楊':'YANG',
+      '許':'HSU','鄭':'CHENG','謝':'HSIEH','郭':'KUO','洪':'HUNG','曾':'TSENG','邱':'CHIU','廖':'LIAO','賴':'LAI','周':'CHOU',
+      '徐':'HSU','蘇':'SU','葉':'YEH','莊':'CHUANG','呂':'LU','江':'CHIANG','何':'HO','蕭':'HSIAO','羅':'LO','高':'KAO',
+      '潘':'PAN','簡':'CHIEN','朱':'CHU','鍾':'CHUNG','鐘':'CHUNG','彭':'PENG','游':'YU','詹':'CHAN','胡':'HU','施':'SHIH',
+      '沈':'SHEN','余':'YU','盧':'LU','梁':'LIANG','趙':'CHAO','顏':'YEN','柯':'KO','翁':'WENG','魏':'WEI','孫':'SUN',
+      '戴':'TAI','范':'FAN','方':'FANG','宋':'SUNG','鄧':'TENG','杜':'TU','傅':'FU','侯':'HOU','曹':'TSAO','薛':'HSUEH',
+      '溫':'WEN','連':'LIEN','唐':'TANG','馬':'MA','董':'TUNG','石':'SHIH','卓':'CHO','程':'CHENG','姚':'YAO','康':'KANG',
+      '馮':'FENG','古':'KU','姜':'CHIANG','湯':'TANG','汪':'WANG','白':'PAI','田':'TIEN','涂':'TU','鄒':'TSOU','巫':'WU',
+      '尤':'YU','龔':'KUNG','嚴':'YEN','袁':'YUAN','金':'CHIN','童':'TUNG','陸':'LU','夏':'HSIA','柳':'LIU','凃':'TU',
+      '邵':'SHAO','錢':'CHIEN','伍':'WU','倪':'NI','溫':'WEN','章':'CHANG','駱':'LO','譚':'TAN','饒':'JAO','萬':'WAN',
+      '歐':'OU','顧':'KU','毛':'MAO','熊':'HSIUNG','秦':'CHIN','史':'SHIH','官':'KUAN','萬':'WAN','俞':'YU','雷':'LEI'
+    };
+
+    const CHAR_WADE_GILES = {
+      '〇':'O','○':'O','0':'O','興':'HSING','陵':'LING','文':'WEN','元':'YUAN','明':'MING','華':'HUA','國':'KUO','榮':'JUNG',
+      '宏':'HUNG','志':'CHIH','偉':'WEI','建':'CHIEN','俊':'CHUN','傑':'CHIEH','豪':'HAO','家':'CHIA','豪':'HAO','宇':'YU',
+      '軒':'HSUAN','冠':'KUAN','廷':'TING','柏':'PO','翰':'HAN','承':'CHENG','恩':'EN','宥':'YU','翔':'HSIANG','瑞':'JUI',
+      '哲':'CHE','瑋':'WEI','宗':'TSUNG','憲':'HSIEN','德':'TE','慶':'CHING','忠':'CHUNG','義':'I','仁':'JEN','禮':'LI',
+      '智':'CHIH','信':'HSIN','孝':'HSIAO','順':'SHUN','福':'FU','祿':'LU','壽':'SHOU','財':'TSAI','富':'FU','貴':'KUEI',
+      '吉':'CHI','祥':'HSIANG','平':'PING','安':'AN','康':'KANG','泰':'TAI','和':'HO','清':'CHING','正':'CHENG','成':'CHENG',
+      '功':'KUNG','輝':'HUI','耀':'YAO','光':'KUANG','昌':'CHANG','盛':'SHENG','隆':'LUNG','發':'FA','達':'TA','遠':'YUAN',
+      '博':'PO','裕':'YU','豐':'FENG','源':'YUAN','泉':'CHUAN','山':'SHAN','川':'CHUAN','海':'HAI','河':'HO','江':'CHIANG',
+      '湖':'HU','松':'SUNG','柏':'PO','竹':'CHU','梅':'MEI','蘭':'LAN','菊':'CHU','蓮':'LIEN','花':'HUA','草':'TSAO',
+      '春':'CHUN','夏':'HSIA','秋':'CHIU','冬':'TUNG','東':'TUNG','南':'NAN','西':'HSI','北':'PEI','中':'CHUNG','天':'TIEN',
+      '地':'TI','日':'JIH','月':'YUEH','星':'HSING','辰':'CHEN','雲':'YUN','風':'FENG','雨':'YU','雪':'HSUEH','霜':'SHUANG',
+      '龍':'LUNG','鳳':'FENG','虎':'HU','鶴':'HO','鵬':'PENG','飛':'FEI','翔':'HSIANG','鳴':'MING','淑':'SHU','芬':'FEN',
+      '貞':'CHEN','美':'MEI','麗':'LI','玲':'LING','玲':'LING','芳':'FANG','怡':'I','君':'CHUN','雅':'YA','婷':'TING',
+      '欣':'HSIN','妍':'YEN','彤':'TUNG','妤':'YU','琪':'CHI','惠':'HUI','敏':'MIN','靜':'CHING','潔':'CHIEH','慧':'HUI',
+      '娟':'CHUAN','秀':'HSIU','英':'YING','玉':'YU','珍':'CHEN','珠':'CHU','寶':'PAO','霞':'HSIA','雲':'YUN','月':'YUEH',
+      '嬌':'CHIAO','娥':'O','娘':'NIANG','妹':'MEI','姐':'CHIEH','姑':'KU','姨':'I','婆':'PO','媽':'MA','母':'MU',
+      '公':'KUNG','爸':'PA','父':'FU','爺':'YEH','祖':'TSU','先':'HSIEN','生':'SHENG','師':'SHIH','長':'CHANG','老':'LAO',
+      '永':'YUNG','恆':'HENG','久':'CHIU','長':'CHANG','年':'NIEN','歲':'SUI','時':'SHIH','代':'TAI','世':'SHIH','界':'CHIEH',
+      '金':'CHIN','銀':'YIN','銅':'TUNG','鐵':'TIEH','錫':'HSI','玉':'YU','石':'SHIH','田':'TIEN','土':'TU','水':'SHUI',
+      '火':'HUO','木':'MU','林':'LIN','森':'SEN','炎':'YEN','淼':'MIAO','焱':'YEN','垚':'YAO','鑫':'HSIN','森':'SEN',
+      '淼':'MIAO','焱':'YEN','政':'CHENG','治':'CHIH','軍':'CHUN','民':'MIN','國':'KUO','家':'CHIA','社':'SHE','會':'HUI',
+      '學':'HSUEH','校':'HSIAO','教':'CHIAO','育':'YU','文':'WEN','化':'HUA','科':'KO','技':'CHI','醫':'I','藥':'YAO',
+      '農':'NUNG','工':'KUNG','商':'SHANG','業':'YEH','經':'CHING','濟':'CHI','法':'FA','律':'LU','道':'TAO','德':'TE',
+      '善':'SHAN','良':'LIANG','慈':'TZU','悲':'PEI','喜':'HSI','捨':'SHE','佛':'FO','法':'FA','僧':'SENG','寶':'PAO',
+      '蓮':'LIEN','華':'HUA','藏':'TSANG','密':'MI','禪':'CHAN','淨':'CHING','土':'TU','光':'KUANG','明':'MING','圓':'YUAN',
+      '滿':'MAN','覺':'CHUEH','悟':'WU','智':'CHIH','慧':'HUI','空':'KUNG','性':'HSING','真':'CHEN','如':'JU','實':'SHIH',
+      '相':'HSIANG','菩':'PU','提':'TI','薩':'SA','埵':'TO','羅':'LO','漢':'HAN','尊':'TSUN','者':'CHE','上':'SHANG',
+      '師':'SHIH','堪':'KAN','布':'PU','仁':'JEN','波':'PO','切':'CHIEH','活':'HUO','佛':'FO','法':'FA','王':'WANG',
+      '勝':'SHENG','利':'LI','凱':'KAI','旋':'HSUAN','榮':'JUNG','耀':'YAO','光':'KUANG','榮':'JUNG','華':'HUA','富':'FU',
+      '貴':'KUEI','添':'TIEN','丁':'TING','發':'FA','財':'TSAI','進':'CHIN','寶':'PAO','招':'CHAO','財':'TSAI','納':'NA',
+      '福':'FU','迎':'YING','春':'CHUN','接':'CHIEH','福':'FU','萬':'WAN','事':'SHIH','如':'JU','意':'I','心':'HSIN',
+      '想':'HSIANG','事':'SHIH','成':'CHENG','步':'PU','步':'PU','高':'KAO','陞':'SHENG','升':'SHENG','鴻':'HUNG','圖':'TU',
+      '大':'TA','展':'CHAN','一':'I','帆':'FAN','風':'FENG','順':'SHUN','二':'ERH','三':'SAN','四':'SSU','五':'WU',
+      '六':'LIU','七':'CHI','八':'PA','九':'CHIU','十':'SHIH','百':'PAI','千':'CHIEN','萬':'WAN','億':'I','兆':'CHAO'
+    };
+
+    function convertChineseNameToWadeGiles(zh) {
+      const clean = (zh || '').trim().replace(/\s+/g, '');
+      if (!clean) return '';
+      if (clean.length === 1) {
+        return SURNAME_WADE_GILES[clean[0]] || CHAR_WADE_GILES[clean[0]] || clean[0];
+      }
+      const surnameChar = clean[0];
+      const givenChars = clean.slice(1).split('');
+      const surnameEn = SURNAME_WADE_GILES[surnameChar] || CHAR_WADE_GILES[surnameChar] || surnameChar;
+      const givenEnArr = givenChars.map(c => CHAR_WADE_GILES[c] || SURNAME_WADE_GILES[c] || 'O');
+      return `${surnameEn}, ${givenEnArr.join('-')}`;
+    }
+
+    function drawCornerFretwork(ctx, W, H) {
+      ctx.save();
+      const pad = 42;
+      // 外圈細金框
+      ctx.strokeStyle = 'rgba(205, 170, 102, 0.55)';
+      ctx.lineWidth = 2.2;
+      ctx.strokeRect(pad, pad, W - pad * 2, H - pad * 2);
+
+      // 四角中式回紋與雙線延伸
+      function drawCornerUnit(cx, cy, sx, sy) {
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.scale(sx, sy);
+
+        ctx.strokeStyle = 'rgba(212, 177, 106, 0.72)';
+        ctx.lineWidth = 2.4;
+        ctx.lineCap = 'square';
+
+        // 長延伸雙線 (水平與垂直)
+        ctx.beginPath();
+        ctx.moveTo(0, 14); ctx.lineTo(310, 14);
+        ctx.moveTo(14, 0); ctx.lineTo(14, 290);
+        ctx.stroke();
+
+        // 角落回字幾何紋
+        ctx.strokeRect(14, 14, 48, 48);
+        ctx.strokeRect(26, 26, 24, 24);
+
+        // 第二層階梯轉折
+        ctx.beginPath();
+        ctx.moveTo(62, 26); ctx.lineTo(98, 26); ctx.lineTo(98, 14);
+        ctx.moveTo(26, 62); ctx.lineTo(26, 98); ctx.lineTo(14, 98);
+        ctx.stroke();
+
+        // 內層細長裝飾線
+        ctx.strokeStyle = 'rgba(212, 177, 106, 0.42)';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(98, 24); ctx.lineTo(250, 24);
+        ctx.moveTo(24, 98); ctx.lineTo(24, 230);
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      drawCornerUnit(pad, pad, 1, 1);
+      drawCornerUnit(W - pad, pad, -1, 1);
+      drawCornerUnit(pad, H - pad, 1, -1);
+      drawCornerUnit(W - pad, H - pad, -1, -1);
+      ctx.restore();
+    }
+
+    // 繪製工筆金線盛開蓮花（如左圖左側與右側背景）
+    function drawDetailedGoldenLotus(ctx, cx, cy, scale, angle, alpha = 0.28) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(scale, scale);
+      ctx.rotate(angle);
+
+      ctx.strokeStyle = `rgba(214, 180, 108, ${alpha})`;
+      ctx.fillStyle = `rgba(22, 31, 45, 0.45)`;
+      ctx.lineWidth = 2.0;
+
+      // 單片蓮花瓣含葉脈
+      function drawPetal(rotAngle, len, width, curve) {
+        ctx.save();
+        ctx.rotate(rotAngle);
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.bezierCurveTo(-width, -len * 0.35, -width * curve, -len * 0.82, 0, -len);
+        ctx.bezierCurveTo(width * curve, -len * 0.82, width, -len * 0.35, 0, 0);
+        ctx.fill();
+        ctx.stroke();
+
+        // 花瓣細膩葉脈紋
+        ctx.strokeStyle = `rgba(214, 180, 108, ${alpha * 0.55})`;
+        ctx.lineWidth = 1.1;
+        for (let i = -2; i <= 2; i++) {
+          ctx.beginPath();
+          ctx.moveTo(0, -10);
+          ctx.quadraticCurveTo(i * (width * 0.32), -len * 0.55, i * (width * 0.14), -len * 0.88);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // 後層展開花瓣
+      const backAngles = [-1.15, -0.75, -0.38, 0.38, 0.75, 1.15];
+      backAngles.forEach(a => drawPetal(a, 185, 48, 0.85));
+
+      // 中層飽滿花瓣
+      const midAngles = [-0.88, -0.48, -0.16, 0.16, 0.48, 0.88];
+      midAngles.forEach(a => drawPetal(a, 165, 52, 0.9));
+
+      // 蓮蓬與蓮子點綴
+      ctx.save();
+      ctx.beginPath();
+      ctx.ellipse(0, -95, 36, 16, 0, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(214, 180, 108, ${alpha * 0.25})`;
+      ctx.fill();
+      ctx.stroke();
+      for (let sx = -22; sx <= 22; sx += 11) {
+        for (let sy = -100; sy <= -90; sy += 8) {
+          ctx.beginPath();
+          ctx.arc(sx, sy, 2.2, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+
+      // 前層主花瓣
+      drawPetal(-0.28, 150, 48, 0.85);
+      drawPetal(0.28, 150, 48, 0.85);
+      drawPetal(0, 158, 52, 0.92);
+
+      // 蓮莖
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(-18, 180, -8, 380);
+      ctx.lineWidth = 3.2;
+      ctx.strokeStyle = `rgba(214, 180, 108, ${alpha * 0.85})`;
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    // 繪製含苞蓮花與蓮葉
+    function drawLotusBud(ctx, cx, cy, scale, angle, alpha = 0.26) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(scale, scale);
+      ctx.rotate(angle);
+      ctx.strokeStyle = `rgba(214, 180, 108, ${alpha})`;
+      ctx.lineWidth = 1.9;
+
+      // 花苞外瓣
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.bezierCurveTo(-42, -35, -35, -105, 0, -135);
+      ctx.bezierCurveTo(35, -105, 42, -35, 0, 0);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.bezierCurveTo(-22, -40, -18, -100, 0, -135);
+      ctx.bezierCurveTo(18, -100, 22, -40, 0, 0);
+      ctx.stroke();
+
+      // 花莖
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(12, 110, 5, 240);
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 繪製傳統吉祥捲雲紋（如左圖右上、右下與左下）
+    function drawAuspiciousCloud(ctx, cx, cy, scaleX, scaleY, alpha = 0.34) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(scaleX, scaleY);
+      ctx.strokeStyle = `rgba(214, 180, 108, ${alpha})`;
+      ctx.lineWidth = 2.4;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      // 外層祥雲輪廓
+      ctx.beginPath();
+      ctx.moveTo(-140, 22);
+      ctx.bezierCurveTo(-175, 22, -180, -18, -135, -22);
+      ctx.bezierCurveTo(-130, -58, -75, -65, -55, -38);
+      ctx.bezierCurveTo(-35, -88, 45, -88, 62, -38);
+      ctx.bezierCurveTo(95, -62, 145, -45, 138, -10);
+      ctx.bezierCurveTo(182, -10, 182, 26, 132, 26);
+      ctx.lineTo(-140, 22);
+      ctx.stroke();
+
+      // 雲頭如意螺旋內紋
+      ctx.beginPath();
+      ctx.moveTo(-95, 5);
+      ctx.bezierCurveTo(-118, 5, -122, -22, -95, -25);
+      ctx.bezierCurveTo(-75, -26, -72, -6, -88, -4);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(-15, -10);
+      ctx.bezierCurveTo(-35, -42, 28, -52, 32, -15);
+      ctx.bezierCurveTo(34, 4, 8, 8, 4, -6);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(72, 8);
+      ctx.bezierCurveTo(105, 8, 112, -20, 86, -24);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    // 繪製右下角流金波浪山嵐
+    function drawBottomGoldWaves(ctx, W, H) {
+      ctx.save();
+      const grad1 = ctx.createLinearGradient(W * 0.52, H, W, H * 0.78);
+      grad1.addColorStop(0, 'rgba(198, 160, 82, 0.0)');
+      grad1.addColorStop(0.45, 'rgba(198, 160, 82, 0.16)');
+      grad1.addColorStop(1, 'rgba(218, 182, 105, 0.34)');
+
+      ctx.fillStyle = grad1;
+      ctx.beginPath();
+      ctx.moveTo(W * 0.50, H - 42);
+      ctx.bezierCurveTo(W * 0.68, H - 55, W * 0.76, H - 185, W * 0.89, H - 210);
+      ctx.bezierCurveTo(W * 0.94, H - 220, W - 42, H - 205, W - 42, H - 190);
+      ctx.lineTo(W - 42, H - 42);
+      ctx.closePath();
+      ctx.fill();
+
+      const grad2 = ctx.createLinearGradient(W * 0.62, H, W, H * 0.86);
+      grad2.addColorStop(0, 'rgba(198, 160, 82, 0.0)');
+      grad2.addColorStop(0.5, 'rgba(212, 175, 95, 0.22)');
+      grad2.addColorStop(1, 'rgba(230, 195, 115, 0.42)');
+
+      ctx.fillStyle = grad2;
+      ctx.beginPath();
+      ctx.moveTo(W * 0.62, H - 42);
+      ctx.bezierCurveTo(W * 0.75, H - 48, W * 0.84, H - 125, W - 42, H - 135);
+      ctx.lineTo(W - 42, H - 42);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 繪製左圖同款「內凹圓弧雙層金框」與無變形等比例照片
+    function drawInvertedCovePhotoFrame(ctx, centerX, topY, boxW, boxH) {
+      const x = centerX - boxW / 2;
+      const y = topY;
+
+      function createInvertedCornerPath(rx, ry, rw, rh, r) {
+        ctx.beginPath();
+        ctx.moveTo(rx + r, ry);
+        ctx.lineTo(rx + rw - r, ry);
+        ctx.arc(rx + rw, ry, r, Math.PI, Math.PI * 0.5, true);
+        ctx.lineTo(rx + rw, ry + rh - r);
+        ctx.arc(rx + rw, ry + rh, r, Math.PI * 1.5, Math.PI, true);
+        ctx.lineTo(rx + r, ry + rh);
+        ctx.arc(rx, ry + rh, r, 0, Math.PI * 1.5, true);
+        ctx.lineTo(rx, ry + r);
+        ctx.arc(rx, ry, r, Math.PI * 0.5, 0, true);
+        ctx.closePath();
+      }
+
+      ctx.save();
+      // 外框立體陰影
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
+      ctx.shadowBlur = 28;
+      ctx.shadowOffsetY = 10;
+
+      // 外層深底襯板
+      createInvertedCornerPath(x - 14, y - 14, boxW + 28, boxH + 28, 26);
+      ctx.fillStyle = '#182232';
+      ctx.fill();
+      ctx.shadowColor = 'transparent';
+
+      // 外層粗金框
+      const frameGrad = ctx.createLinearGradient(x, y, x + boxW, y + boxH);
+      frameGrad.addColorStop(0, '#f0d79a');
+      frameGrad.addColorStop(0.5, '#c59f52');
+      frameGrad.addColorStop(1, '#9c7832');
+
+      createInvertedCornerPath(x - 14, y - 14, boxW + 28, boxH + 28, 26);
+      ctx.strokeStyle = frameGrad;
+      ctx.lineWidth = 4.5;
+      ctx.stroke();
+
+      // 內層細金框與雅緻淺灰白襯底
+      createInvertedCornerPath(x, y, boxW, boxH, 22);
+      ctx.fillStyle = '#e5e9ec';
+      ctx.fill();
+
+      // 裁切照片區域並以真實幾何比例繪製（100% 不壓縮變形）
+      ctx.save();
+      createInvertedCornerPath(x + 4, y + 4, boxW - 8, boxH - 8, 20);
+      ctx.clip();
+
+      const activeImg = uploadedPhotoImg;
+      if (activeImg && activeImg.width > 0 && activeImg.height > 0) {
+        const zoom = (parseInt(document.getElementById('photoZoom').value, 10) || 100) / 100;
+        const panX = parseInt(document.getElementById('photoPanX').value, 10) || 0;
+        const panY = parseInt(document.getElementById('photoPanY').value, 10) || 0;
+
+        const imgAspect = activeImg.width / activeImg.height;
+        const boxAspect = boxW / boxH;
+
+        let drawW, drawH;
+        if (imgAspect > boxAspect) {
+          drawH = boxH;
+          drawW = boxH * imgAspect;
+        } else {
+          drawW = boxW;
+          drawH = boxW / imgAspect;
+        }
+
+        drawW *= zoom;
+        drawH *= zoom;
+
+        const drawX = x + (boxW - drawW) / 2 + (panX / 100 * Math.max(0, (drawW-boxW)/2));
+        const drawY = y + (boxH - drawH) / 2 + (panY / 100 * Math.max(0, (drawH-boxH)/2));
+
+        ctx.drawImage(activeImg, drawX, drawY, drawW, drawH);
+      }
+      ctx.restore();
+
+      // 再疊一層內框金線確保邊緣俐落
+      createInvertedCornerPath(x, y, boxW, boxH, 22);
+      ctx.strokeStyle = frameGrad;
+      ctx.lineWidth = 2.6;
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    // 繪製底部八輻法輪與雙側金蓮（如左圖正下方）
+    function drawBottomDharmaWheelAndLotuses(ctx, cx, cy) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      const gold = 'rgba(208, 172, 98, 0.78)';
+      ctx.strokeStyle = gold;
+      ctx.fillStyle = gold;
+
+      // 中央八輻法輪
+      ctx.save();
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.arc(0, 0, 38, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(0, 0, 31, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(0, 0, 9, 0, Math.PI * 2);
+      ctx.stroke();
+
+      for (let i = 0; i < 8; i++) {
+        ctx.save();
+        ctx.rotate((Math.PI * 2 * i) / 8);
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(0, 9);
+        ctx.lineTo(0, 31);
+        ctx.stroke();
+
+        // 外輪緣法釘裝飾
+        ctx.beginPath();
+        ctx.arc(0, 41, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+      ctx.restore();
+
+      // 左右對稱小金蓮
+      function drawSmallLotusIcon(offsetX) {
+        ctx.save();
+        ctx.translate(offsetX, 8);
+        ctx.lineWidth = 1.8;
+        ctx.strokeStyle = 'rgba(208, 172, 98, 0.62)';
+
+        const angles = [-0.85, -0.45, 0, 0.45, 0.85];
+        angles.forEach(a => {
+          ctx.save();
+          ctx.rotate(a);
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.bezierCurveTo(-11, -12, -9, -30, 0, -38);
+          ctx.bezierCurveTo(9, -30, 11, -12, 0, 0);
+          ctx.stroke();
+          ctx.restore();
+        });
+        ctx.restore();
+      }
+
+      drawSmallLotusIcon(-115);
+      drawSmallLotusIcon(115);
+
+      ctx.restore();
+    }
+
+
+function englishName(){const n=$('name').value.trim();if($('english').value.trim())return $('english').value.trim();const chars=Array.from(n),compound=/^(歐陽|司馬|上官|諸葛|司徒|夏侯|皇甫|尉遲)/.test(n);if(compound||chars.some(c=>!CHAR_WADE_GILES[c]&&!SURNAME_WADE_GILES[c]))return n;return convertChineseNameToWadeGiles(n);}
+function sync(){let error='';birth=null;try{birth=readBirth();$('converted').textContent=`國曆 ${solarText(birth)} ／ ${lunarText(birth)}`;}catch(e){error=e.message;$('converted').textContent='';}
+const n=$('name').value.trim(),en=englishName(),death=$('death').value,dd=death?new Date(death+'T00:00:00Z'):null;
+$('nameHint').textContent=en===n?'英文姓名尚未提供，卡片使用中文姓名；可自行填入英文拼法。':'自動拼音僅供參考，請確認多音字與本人慣用拼法。';
+if(!dirtyEn)$('enText').value=`${en||'姓名'} (born ${birth?new Intl.DateTimeFormat('en-US',{dateStyle:'long',timeZone:'UTC'}).format(birth):'—'}; passed away ${dd&&!isNaN(dd)?'on '+new Intl.DateTimeFormat('en-US',{dateStyle:'long',timeZone:'UTC'}).format(dd):'—'}).
+We humbly request Khenpo to perform the Phowa practice for the deceased.
+The photo is attached for visualization.`;
+if(!dirtyZh)$('zhText').value=`逝者：${n||'姓名'}（${birth?'國曆'+solarText(birth)+'／'+lunarText(birth):'出生日期待填'}；${dd&&!isNaN(dd)?'於'+solarText(dd)+'捨報':'死亡日期待填'}）。
+虔誠祈請 堪布慈悲為其修持頗瓦法（遷識法），並附上照片以供觀想。`;
+if(!n)error='請填寫姓名。';else if(!death||!dd||isNaN(dd))error='請填寫死亡日期。';else if(birth&&dd<birth)error='死亡日期不可早於出生日期。';else if(dd>new Date())error='死亡日期不可晚於今天。';else if(photoLoading)error='照片處理中…';else if(photoError)error=photoError;else if(!uploadedPhotoImg)error='請上傳照片。';
+$('status').textContent=error||'資料已完成，可下載祈請卡。';$('download').disabled=!!error;schedule();}
+function schedule(){if(frame)return;frame=requestAnimationFrame(()=>{frame=0;render();});}
+function lines(ctx,text,width){const result=[];for(const para of text.split('\n')){let s='';for(const token of (para.match(/[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*|\s+|[^\s]/gu)||[])){if(ctx.measureText(s+token).width>width&&s){result.push(s.trim());s='';}if(ctx.measureText(token).width>width){for(const c of Array.from(token)){if(ctx.measureText(s+c).width>width&&s){result.push(s);s='';}s+=c;}}else{s+=(!s?token.trimStart():token);}}result.push(s);}return result;}
+function block(ctx,text,top,bottom,size,min){let ls,h;for(;size>=min;size--){ctx.font=`600 ${size}px Georgia,"Noto Serif TC","PMingLiU",serif`;ls=lines(ctx,text,1000);h=size*1.45;if(ls.length*h<=bottom-top)break;}if(size<min)return false;ls.forEach((s,i)=>ctx.fillText(s,600,top+h*(i+.5)));return true;}
+function render(){const c=$('masterCanvas'),ctx=c.getContext('2d');const g=ctx.createRadialGradient(600,500,60,600,840,1400);g.addColorStop(0,'#263548');g.addColorStop(1,'#111a26');ctx.fillStyle=g;ctx.fillRect(0,0,1200,1680);drawDetailedGoldenLotus(ctx,210,495,1.15,-.06,.25);drawDetailedGoldenLotus(ctx,900,595,.78,.08,.20);drawAuspiciousCloud(ctx,1020,320,.92,.85,.3);drawBottomGoldWaves(ctx,1200,1680);drawCornerFretwork(ctx,1200,1680);ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle='#ebce89';ctx.font='600 76px Georgia,serif';ctx.fillText('PHOWA REQUEST',600,145);ctx.font='600 53px serif';ctx.fillText('頗 瓦 法 超 薦 祈 請',600,236);drawInvertedCovePhotoFrame(ctx,600,325,388,492);if(!uploadedPhotoImg){ctx.fillStyle='#566273';ctx.font='32px sans-serif';ctx.fillText('請上傳照片',600,570);}ctx.fillStyle='#f0d99c';const n=$('name').value.trim()||'姓名',en=englishName();const title=en&&en!==n?`${en}（${n}）`:n;let size=60;do{ctx.font=`600 ${size}px Georgia,serif`;size--;}while(ctx.measureText(title).width>1000&&size>15);ctx.fillText(title,600,914);layoutOK=block(ctx,$('enText').value,990,1255,37,22)&&block(ctx,$('zhText').value,1300,1520,32,22);drawBottomDharmaWheelAndLotuses(ctx,600,1582);if(!layoutOK){$('download').disabled=true;$('status').textContent='內文過長，請縮短進階祈請文後下載。';}}
+$('form').addEventListener('submit',e=>e.preventDefault());for(let i=1;i<=12;i++)$('month').add(new Option(i+' 月',i));updateDays();
+for(const id of ['year','month','leap'])$(id).addEventListener('input',()=>{try{updateDays();sync();}catch(e){$('status').textContent=e.message;$('download').disabled=true;}});
+for(const id of ['calendar','era'])$(id).addEventListener('change',()=>{$('leapWrap').hidden=$('calendar').value!=='lunar';try{applyBirth(birth);updateDays();sync();}catch(e){$('status').textContent=e.message;$('download').disabled=true;}});
+for(const id of ['name','english','day','death'])$(id).addEventListener('input',sync);for(const id of ['photoZoom','photoPanX','photoPanY'])$(id).addEventListener('input',schedule);
+$('enText').addEventListener('input',()=>{dirtyEn=true;sync();});$('zhText').addEventListener('input',()=>{dirtyZh=true;sync();});$('resetText').onclick=()=>{dirtyEn=dirtyZh=false;sync();};
+$('photo').onchange=async()=>{const version=++photoVersion,file=$('photo').files[0];if(!file)return;photoError='';uploadedPhotoImg=null;photoLoading=true;sync();let url;try{if(file.size>20*1024*1024)throw Error('照片超過 20 MB，請縮小後上傳。');if(!['image/jpeg','image/png','image/webp'].includes(file.type))throw Error('請選擇 JPG、PNG 或 WebP 照片。');url=URL.createObjectURL(file);const img=new Image();img.src=url;await img.decode();if(version!==photoVersion)return;const scale=Math.min(1,2400/Math.max(img.naturalWidth,img.naturalHeight));const small=document.createElement('canvas');small.width=Math.round(img.naturalWidth*scale);small.height=Math.round(img.naturalHeight*scale);small.getContext('2d').drawImage(img,0,0,small.width,small.height);uploadedPhotoImg=small;$('photoZoom').value=100;$('photoPanX').value=$('photoPanY').value=0;}catch(e){if(version===photoVersion)photoError=e.message||'無法讀取照片，請換一張。';}finally{if(url)URL.revokeObjectURL(url);if(version===photoVersion){photoLoading=false;sync();}}};
+$('download').onclick=async()=>{try{await document.fonts.ready;sync();render();if($('download').disabled)return;const blob=await new Promise(r=>$('masterCanvas').toBlob(r,'image/png'));if(!blob)throw Error('圖片產生失敗，請重試。');const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='頗瓦法超薦祈請卡_'+$('name').value.replace(/[\\/:*?"<>|]/g,'_')+'.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);}catch(e){$('status').textContent=e.message;}};
+$('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('enText').value+'\n\n'+$('zhText').value);$('status').textContent='已複製中英文祈請文。';}catch(e){$('status').textContent='無法使用剪貼簿，請在進階設定中選取文字手動複製。';}};
+try{lunarParts(new Date());sync();}catch(e){$('status').textContent=e.message;$('download').disabled=true;}
+</script></html>
